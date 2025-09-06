@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>临时邮箱 / Temporary Mailbox</title>
+
+  <!-- UI libs -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/semantic-ui@2.5.0/dist/semantic.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
+
+  <style>
+    :root {
+      --muted:#6b7280; --border:#e5e7eb; --bg:#f7f8fb; --brand:#2563eb; --brand-ghost:#eff6ff;
+      --radius:14px; --pad:22px;
+    }
+    html,body{margin:0; background:var(--bg); color:#0f172a; font-family:"Noto Sans SC", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;}
+    .container{max-width:1180px; margin:0 auto; padding:0 14px;}
+    .topbar{position:sticky; top:0; z-index:10; background:#fff; border-bottom:1px solid var(--border);}
+    .topbar-inner{display:flex; align-items:center; height:56px; gap:10px;}
+    .brand{display:flex; align-items:center; gap:10px; font-weight:700; color:#374151;}
+    .brand img{width:28px;height:28px;border-radius:6px;}
+    .pill{display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; margin-left:6px; background:#eef2ff; color:#3730a3; white-space:nowrap;}
+    .lang{margin-left:auto; display:flex; gap:6px;}
+    .lang .ui.button{padding:.4rem .6rem;}
+    .main{padding:14px 0 28px;}
+
+    .card{background:#fff; border:1px solid var(--border); border-radius:var(--radius); box-shadow:0 4px 18px rgba(0,0,0,.04); padding:var(--pad);}
+    .stack{display:flex; flex-direction:column; gap:14px;} /* 始终竖排一列 */
+
+    .controls{display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;}
+    .field>label{display:block; font-size:12px; color:var(--muted); margin-bottom:6px;}
+    input.ui.input, input[type="text"], input[type="number"]{padding:10px 12px; border:1px solid var(--border); border-radius:10px; outline:none;}
+    input[disabled]{background:#f9fafb; color:#6b7280;}
+    .mode{display:flex; gap:10px; align-items:center; background:#f9fafb; border:1px solid var(--border); border-radius:10px; padding:8px 10px;}
+    .mode label{display:flex; align-items:center; gap:6px; cursor:pointer; font-size:14px;}
+    .mode input{accent-color: var(--brand);}
+    .actions{display:flex; align-items:center; gap:10px; margin-left:auto;}
+    .icon-btn{display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:11px; border:1px solid var(--border); background:#fff; cursor:pointer; transition:all .12s ease;}
+    .icon-btn:hover{transform:translateY(-1px); box-shadow:0 6px 18px rgba(37,99,235,.15); background:var(--brand-ghost);}
+    .icon{font-style:normal; font-weight:800; color:var(--brand); line-height:0;}
+    .copy{padding:10px 14px; border:1px dashed var(--brand); color:var(--brand); background:var(--brand-ghost); border-radius:10px; cursor:pointer;}
+
+    .email-box{display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:14px; background:linear-gradient(180deg,#ffffff 0%,#f9fbff 100%); border:1px solid var(--border); border-radius:12px;}
+    .email-input{flex:1 1 280px; min-width:240px;}
+    .muted{color:var(--muted); font-size:12px;}
+
+    .table-wrap{border:1px solid var(--border); border-radius:12px; overflow:auto; background:#fff;}
+    table.mail{width:100%; border-collapse:separate; border-spacing:0; min-width:640px;}
+    table.mail th, table.mail td{padding:12px 14px; border-bottom:1px solid var(--border);}
+    table.mail th{background:#fbfbfb; color:#334155; font-weight:600; position:sticky; top:0; z-index:1;}
+    table.mail tr:last-child td{border-bottom:none;}
+    table.mail tbody tr{cursor:pointer;}
+    table.mail tbody tr:hover{background:#f8fbff;}
+
+    .code-card h4{margin:0 0 6px 0; font-size:16px;}
+    .code-text{font-size:clamp(24px, 5vw, 36px); font-weight:800; letter-spacing:.5px;}
+
+    .right-side{display:flex; flex-direction:column; gap:14px;} /* 始终一行一个卡片 */
+    .right-side .card{width:100%;}
+  </style>
+
+  <script>
+    /* ===== SweetAlert helpers ===== */
+    function alertSuccess(title, text) { Swal.fire({icon:'success', title: title||'成功', text: text||'', confirmButtonText:'OK'}); }
+    function alertInfo(title, text)    { Swal.fire({icon:'info', title: title||'提示',  text: text||'', confirmButtonText:'OK'}); }
+    function alertWarn(title, text)    { Swal.fire({icon:'warning', title: title||'注意', text: text||'', confirmButtonText:'OK'}); }
+    function alertError(title, text)   { Swal.fire({icon:'error', title: title||'失败',  text: text||'', confirmButtonText:'OK'}); }
+
+    /* ===== API & helpers ===== */
+    let BASE = 'https://mail.juzi123.art';
+    const FALLBACK = 'http://mail.juzi123.art';
+    const seenIds = new Set();
+    let currentEmail = null, latestMsgId = null, latestAt = 0;
+
+    const $ = (s)=>document.querySelector(s);
+    const fmt=(ts)=>{try{const n=String(ts);return new Date((/^[0-9]{10}$/.test(n)?Number(n)*1000:Number(ts))).toLocaleString();}catch{return '-';}};
+
+    async function fetchJSON(url, opts={}) {
+      try {
+        const r = await fetch(url, opts);
+        const ct = r.headers.get('content-type')||'';
+        const payload = ct.includes('application/json') ? await r.json() : await r.text();
+        if(!r.ok){ const err=new Error(typeof payload==='string'?payload:JSON.stringify(payload)); err.status=r.status; err.data=payload; throw err; }
+        return payload;
+      } catch(e) {
+        const msg=String(e), net = e.name==='TypeError'||/Failed to fetch|network|ERR_CERT|SSL/i.test(msg);
+        if(url.startsWith('https://') && net){
+          BASE = FALLBACK;
+          alertWarn('已自动回退','HTTPS 连接异常，已切换到 HTTP 通道');
+          const u = url.replace('https://','http://');
+          const r2 = await fetch(u, opts);
+          const ct2 = r2.headers.get('content-type')||''; const payload2 = ct2.includes('application/json')? await r2.json() : await r2.text();
+          if(!r2.ok){ const err2=new Error(typeof payload2==='string'?payload2:JSON.stringify(payload2)); err2.status=r2.status; err2.data=payload2; throw err2; }
+          return payload2;
+        }
+        throw e;
+      }
+    }
+
+    const apiHealth   = async()=>{ try{ await fetchJSON(`${BASE}/health`); $('#apiPill').textContent='API 正常'; } catch{ $('#apiPill').textContent='API 异常'; } };
+    const apiNewMail  = async(prefix='', expires='')=>{ const u = prefix? `${BASE}/new_mail?prefix=${encodeURIComponent(prefix)}${expires?`&expires_in=${encodeURIComponent(expires)}`:''}` : `${BASE}/new_mail`; const d = await fetchJSON(u); return d.email; };
+    const apiGetCode  = async(email)=>{ try{ return await fetchJSON(`${BASE}/get_code?email=${encodeURIComponent(email)}`); }catch(e){ if(e.status===404) return null; throw e; } };
+    const apiList     = async(email, limit=20)=>{ const d = await fetchJSON(`${BASE}/list_emails?email=${encodeURIComponent(email)}&limit=${limit}`); return Array.isArray(d)?d:(d.items||d.data||[]); };
+    const apiGetBody  = (email, id)=> fetchJSON(`${BASE}/get_body?email=${encodeURIComponent(email)}&id=${encodeURIComponent(id)}`);
+
+    function setLatestCode(code, createdAt, metaText){
+      if(!code) return;
+      const ts=Number(createdAt)||0; if(ts<=latestAt) return;
+      latestAt=ts;
+      $('#latestCode').textContent = code;
+      $('#latestMeta').textContent = metaText||'';
+      try{ navigator.clipboard?.writeText(code); }catch{}
+    }
+    function renderRow(row){
+      const id=row.id||''; if(id && seenIds.has(id)) return; seenIds.add(id);
+      const tb = $('#maillist'); const tr=document.createElement('tr'); tr.setAttribute('data-id', id);
+      tr.innerHTML = `<td>${row.from||row.from_name||''}</td><td>${row.subject||''}</td><td>${fmt(row.created_at||row.date||Date.now())}</td>`;
+      tb.prepend(tr);
+    }
+    async function showBody(id){
+      if(!id || !currentEmail) return;
+      try{
+        const d = await apiGetBody(currentEmail, id);
+        const html = d.body_html || `<pre>${(d.body_text||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</pre>`;
+        $('#mailHeader').textContent = d.subject || '正文';
+        $('#mailPreview').innerHTML  = html;
+      }catch{ alertError('获取失败','邮件正文拉取失败'); }
+    }
+
+    async function pollOnce(){
+      if(!currentEmail) return;
+      // 1) 先 /get_code 快速命中验证码
+      const hit = await apiGetCode(currentEmail);
+      if(hit && hit.id && hit.id !== latestMsgId){
+        renderRow(hit);
+        const t = hit.created_at || hit.date || Math.floor(Date.now()/1000);
+        setLatestCode(hit.code, t, `${fmt(t)} · ${hit.from||hit.from_name||''}`);
+        latestMsgId = hit.id;
+        return;
+      }
+      // 2) 再 list 历史，渲染表格并尝试从主题/正文中提取验证码（4~8位数字）
+      const items = await apiList(currentEmail, 20);
+      if(items && items.sort){ items.sort((a,b)=>((b.created_at||b.date||0)-(a.created_at||a.date||0))); }
+      for(const m of items){
+        const id = m.id || m.msg_id || `${m.subject||''}-${m.date||m.created_at||''}`;
+        renderRow({ id, subject:m.subject, from:m.from_addr||m.from_name||m.from, created_at:m.created_at||m.date||Date.now() });
+      }
+      const re = /(?<!\d)(\d{4,8})(?!\d)/;
+      for(const m of items){
+        const id = m.id || m.msg_id || `${m.subject||''}-${m.date||m.created_at||''}`;
+        const pools = [m.subject||'', m.body_text||'', (m.body_html||'').replace(/<[^>]+>/g,' ')];
+        let code=''; for(const p of pools){ const mm = re.exec(p); if(mm){ code=(mm[1]||mm[0]).replace(/\D/g,''); break; } }
+        if(code && id !== latestMsgId){
+          const crAt = m.created_at || m.date || Math.floor(Date.now()/1000);
+          setLatestCode(code, crAt, `${fmt(crAt)} · ${m.from_addr||m.from_name||m.from||''}`);
+          latestMsgId = id; break;
+        }
+      }
+    }
+
+    let timer=null;
+    async function start(){
+      if(timer){ clearInterval(timer); timer=null; }
+      await apiHealth();
+      const isCustom = document.getElementById('mode_custom').checked;
+      const prefix   = isCustom ? (document.getElementById('prefix').value||'') : '';
+      const exp      = document.getElementById('expires').value||'3600';
+      currentEmail   = await apiNewMail(prefix.trim(), exp.trim());
+      document.getElementById('shortid').value = currentEmail;
+      document.getElementById('curEmail').textContent=currentEmail;
+      document.getElementById('latestCode').textContent='—';
+      document.getElementById('latestMeta').textContent='等待中…';
+      seenIds.clear(); latestMsgId=null; latestAt=0;
+      document.getElementById('maillist').innerHTML='';
+      timer=setInterval(pollOnce, 2500);
+      alertSuccess('开始监听',`当前邮箱：${currentEmail}`);
+    }
+    function stop(){
+      if(timer){ clearInterval(timer); timer=null; alertInfo('已停止监听','如需继续，请再次点击 ▶'); }
+    }
+
+    window.addEventListener('load', ()=>{
+      document.getElementById('btnStart').addEventListener('click', start);
+      document.getElementById('btnStop').addEventListener('click', stop);
+      document.getElementById('btnCopy').addEventListener('click', async ()=>{
+        const v = document.getElementById('shortid').value.trim();
+        if(!v){ alertInfo('暂无邮箱','请先点击 ▶ 获取一个邮箱'); return; }
+        try{
+          await navigator.clipboard.writeText(v);
+          Swal.fire({title:'复制成功', text:`您的邮箱为：${v}`, icon:'success', confirmButtonText:'OK'});
+        }catch(e){
+          alertError('复制失败','您的浏览器可能未授权粘贴板权限，可手动选中复制。');
+        }
+      });
+      document.getElementById('maillist').addEventListener('click', (e)=>{
+        const tr = e.target.closest('tr'); if(!tr) return;
+        const id = tr.getAttribute('data-id'); if(id) showBody(id);
+      });
+      const togglePrefix = ()=>{ const s = document.getElementById('mode_custom').checked ? 'block':'none'; document.getElementById('grpPrefix').style.display=s; };
+      ['mode_random','mode_custom'].forEach(id=>document.getElementById(id).addEventListener('change', togglePrefix));
+      togglePrefix();
+    });
+  </script>
+</head>
+<body>
+  <!-- 顶部栏 -->
+  <div class="topbar">
+    <div class="container topbar-inner">
+      <div class="brand">
+        <img src="./assets/yxlogo.png" alt="logo" />
+        <span>临时邮箱</span>
+        <span class="pill" id="apiPill">API 检查中</span>
+      </div>
+      <div class="lang">
+        <button class="ui mini button" onclick="location.reload()">刷新</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container main">
+    <div class="card" style="margin-bottom:12px;">
+      <h2 style="margin:0 0 6px 0;">免费临时邮箱服务</h2>
+      <div style="color:#6b7280;">无需注册，即时使用，保护您的隐私</div>
+    </div>
+
+    <div class="stack">
+      <!-- 控制 & 列表 -->
+      <div class="card">
+        <div class="controls">
+          <div class="mode">
+            <label><input type="radio" name="mode" id="mode_random" checked /> 随机获取邮箱</label>
+            <label><input type="radio" name="mode" id="mode_custom" /> 自定义邮箱</label>
+          </div>
+          <div id="grpPrefix" class="field" style="display:none;">
+            <label>自定义前缀</label>
+            <input id="prefix" class="ui input" placeholder="test001" />
+          </div>
+          <div class="field">
+            <label>过期秒（默认3600）</label>
+            <input id="expires" type="number" value="3600" min="60" step="60" class="ui input" />
+          </div>
+          <div class="actions">
+            <button id="btnStart" class="icon-btn" title="开始监听 / 获取新邮箱"><span class="icon">▶</span></button>
+            <button id="btnStop" class="icon-btn" title="停止监听"><span class="icon">■</span></button>
+          </div>
+        </div>
+
+        <div class="email-box" style="margin-top:12px;">
+          <input id="shortid" class="email-input" type="text" placeholder="点击 ▶ 获取新邮箱" disabled />
+          <button id="btnCopy" class="copy">复制邮箱</button>
+          <span class="muted">当前邮箱：</span><span id="curEmail" class="pill">—</span>
+        </div>
+
+        <div class="table-wrap" style="margin-top:12px;">
+          <table class="mail">
+            <thead>
+              <tr>
+                <th style="width:30%;">发信人</th>
+                <th style="width:55%;">主题</th>
+                <th style="width:15%;">时间</th>
+              </tr>
+            </thead>
+            <tbody id="maillist"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 右侧区域（始终竖排，一行一个卡片） -->
+      <div class="right-side">
+        <div class="card" id="mailcard">
+          <div class="content">
+            <div id="mailHeader" class="header" style="font-weight:700;">收到邮件后点邮件信息查看邮件内容</div>
+          </div>
+          <div id="mailPreview" class="content" style="padding-top:10px;">
+            <p class="muted">我的邮件在哪里？系统收到邮件后上方会有邮件信息点击邮件即可查看</p>
+          </div>
+        </div>
+
+        <div class="card code-card">
+          <h4>最近验证码</h4>
+          <div class="code-text" id="latestCode">—</div>
+          <div class="muted" id="latestMeta" style="margin-top:6px;">等待中…</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px; text-align:center; color:#6b7280;">
+      <i class="notched circle loading icon"></i>
+      <span>服务正常运行中</span>
+    </div>
+  </div>
+</body>
+</html>
